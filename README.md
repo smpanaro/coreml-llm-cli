@@ -6,6 +6,8 @@ Download a CoreML-compatible Llama 2 7B model (~4GB), load it, and generate text
 $ swift run LLMCLI --repo-id smpanaro/Llama-2-7b-coreml
 ```
 
+**Note:** macOS 14 (Sonoma) is required.
+
 ## Performance
 I'm curious to see the performance of this model on different M-series chips. If you don't see your chip below or if you get significantly different timings, please run the following command and open an issue so I can add it!
 
