@@ -16,9 +16,11 @@ To download + measure:
 $ swift run -c release LLMCLI --repo-id smpanaro/Llama-2-7b-coreml --max-new-tokens 80
 ```
 
-|Variant|First Load Time|Second+ Load Time|Tokens/Sec    |
-|--     |--             |--               |--            |
-|M1 Max |77s            |7.5s             |4.97 +/- 0.11 |
+|Variant|First Load Time|Second+ Load Time|Tokens/Sec    |ANE Power|
+|--     |--             |--               |--            |-        |
+|M1 Max |77s            |7.5s             |4.97 +/- 0.11 |3.6W     |
+|M3     |-              |-                |7             |5.6W     |
+|M3 Max |-              |-                |7.6           |5.5W     |
 
 ## Inference Optimizations
 This CLI implements a couple optimizations that might be useful/interesting even in medium-sized and smaller models.
