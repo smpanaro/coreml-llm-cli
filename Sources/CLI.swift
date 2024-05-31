@@ -24,7 +24,7 @@ struct CLI: AsyncParsableCommand {
     var logitProcessorModelName: String = "logit-processor.mlmodelc"
 
     @Option(help: "Tokenizer name on huggingface.")
-    var tokenizerName: String = "meta-llama/Llama-2-7b-hf"
+    var tokenizerName: String = "pcuenq/Llama-2-7b-chat-coreml"
 
     @Argument(help: "Input text.")
     var inputText: String = "Several species of shrub of the genus Coffea produce the berries from which coffee is extracted. The two main species commercially cultivated are Coffea canephora"
