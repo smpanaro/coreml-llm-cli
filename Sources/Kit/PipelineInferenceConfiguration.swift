@@ -25,11 +25,12 @@ extension PipelineInferenceConfiguration {
         let logits = last.modelDescription.outputDescriptionsByName["logits"]
         self.vocabSize = logits!.multiArrayConstraint!.shape.last!.intValue
 
-        guard let firstInnerModel = innerModels.first
+        guard let firstInnerModelInputs = innerModels.first?.modelDescription.inputDescriptionsByName
         else { return nil }
 
-        let firstKeyCache = firstInnerModel.modelDescription.inputDescriptionsByName["k_cache_0"]
-        self.contextLength = self.inputLength + firstKeyCache!.multiArrayConstraint!.shape.last!.intValue
+        // Use k cache for Sonoma models and Sequoia generation models. x for Sequoia prompt models.
+        let contextTensorDescription = firstInnerModelInputs["k_cache_0"] ?? firstInnerModelInputs["x"]
+        self.contextLength = self.inputLength + contextTensorDescription!.multiArrayConstraint!.shape.last!.intValue
     }
 }
 

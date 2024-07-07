@@ -13,8 +13,30 @@ extension MLComputeUnits {
     }
 }
 
+extension MLShapedArray where Scalar == Float16 {
+    @available(macOS 15, *)
+    static func emptyIOSurfaceArray(shape: [Int]) -> MLShapedArray<Float16> {
+        let pixelBuffer = CVPixelBuffer.emptyIOSurfaceBuffer(shape: shape)
+        return MLShapedArray<Float16>(mutating: pixelBuffer!, shape: shape)
+    }
+}
+
 extension MLMultiArray {
     class func emptyIOSurfaceArray(shape: [Int]) -> MLMultiArray? {
+        guard let pixelBuffer = CVPixelBuffer.emptyIOSurfaceBuffer(shape: shape) else {
+            return nil
+        }
+        return MLMultiArray(pixelBuffer: pixelBuffer, shape: shape.map({ $0 as NSNumber }))
+    }
+
+    @available(macOS 15, *)
+    func toTensor() -> MLTensor {
+        MLTensor(MLShapedArray<Float16>(self))
+    }
+}
+
+extension CVPixelBuffer {
+    class func emptyIOSurfaceBuffer(shape: [Int]) -> CVPixelBuffer? {
         guard
             shape.count > 0,
             let width = shape.last
@@ -39,7 +61,7 @@ extension MLMultiArray {
         precondition(kCVReturnSuccess == CVPixelBufferUnlockBaseAddress(pixelBuffer, .init(rawValue: 0)),
                      "Failed to unlock pixel buffer base address")
 
-        return MLMultiArray(pixelBuffer: pixelBuffer, shape: shape.map({ $0 as NSNumber }))
+        return pixelBuffer
     }
 }
 
@@ -51,7 +73,7 @@ extension MLPredictionOptions {
         outputBackings.forEach { name, backing in
             guard let multiArrayValue = outputs.featureValue(for: name)?.multiArrayValue,
                   multiArrayValue.dataType == .float16
-            else { return }
+            else { preconditionFailure("no float16 multiArray output for backing name: \(name)") }
 
             guard let outputPixelBuffer = multiArrayValue.pixelBuffer
             else { preconditionFailure("output array is not pixel buffer backed: \(name)") }
@@ -65,5 +87,24 @@ extension MLPredictionOptions {
         }
 
         return ignored
+    }
+}
+
+extension MLModelConfiguration {
+    func withInfrequentReshapes() -> Self {
+        let new = copy() as! Self
+        if #available(macOS 14.4, *) {
+            new.optimizationHints = MLOptimizationHints()
+            new.optimizationHints.reshapeFrequency = .infrequent
+        }
+        return new
+    }
+
+    func withFunctionName(_ name: String?) -> Self {
+        let new = copy() as! Self
+        if #available(macOS 15, *) {
+            new.functionName = name
+        }
+        return new
     }
 }

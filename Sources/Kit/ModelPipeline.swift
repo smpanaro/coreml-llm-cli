@@ -26,46 +26,47 @@ class ModelPipeline {
 
     /// Load the pipeline gradually to minimize resource usage
     /// during the initial load and model compilation/specialization.
-    fileprivate func prewarm() {
+    fileprivate func prewarm() async {
         print("Compiling models: ", terminator: "")
         fflush(stdout)
 
         // No need for signposts, should be fast.
-        loadableProcessors.forEach {
-            $0.load()
-            $0.unload()
+        for processor in loadableProcessors {
+            await processor.load()
+            processor.unload()
         }
 
-        chunks.enumerated().forEach { (i, chunk) in
-            signposter.withIntervalSignpost("Prepare", "Warm Chunk \(i)") {
-                chunk.load()
-                chunk.unload()
-            }
+        for (i, chunk) in chunks.enumerated() {
+            let state = signposter.beginInterval("Prepare", id: signposter.makeSignpostID(), "Warm Chunk \(i)")
+            await chunk.load()
+            chunk.unload()
+            signposter.endInterval("", state)
             print("*", terminator: "")
             fflush(stdout)
         }
         print()
     }
 
-    func load() throws {
-        prewarm()
+    func load() async throws {
+//        await prewarm() // Doesn't seem to help on Sequoia since model caching is iffy (in beta 1 at least).
         print("Loading models  : ", terminator: "")
         fflush(stdout)
 
-        loadableProcessors.forEach {
-            $0.load()
+        // Should be fast, sync is fine.
+        for processor in loadableProcessors {
+             await processor.load()
         }
 
-        chunks.enumerated().forEach { (i, chunk) in
-            signposter.withIntervalSignpost("Prepare", "Load Chunk \(i)") {
-                chunk.load()
-            }
+        for (i, chunk) in chunks.enumerated() {
+            let state = signposter.beginInterval("Prepare", id: signposter.makeSignpostID(), "Load Chunk \(i)")
+            await chunk.load()
+            signposter.endInterval("", state)
             print("*", terminator: "")
             fflush(stdout)
         }
         print()
 
-        inferenceConfiguration = .init(from: chunks.compactMap { $0.model })
+        inferenceConfiguration = .init(from: chunks.compactMap { $0.promptModel! })
         if inferenceConfiguration == nil {
             // Unable to infer the correct model parameters from the model inputs.
             // We won't be able to predict.
@@ -87,22 +88,25 @@ class ModelPipeline {
         let arrayStore = MultiArrayStore(for: self)
         let kvCacheProcessor = KVCacheProcessor(pipeline: self, processorModel: cacheProcessorModel.model!)
 
+        let promptTokenCount = tokens.count
         return AsyncThrowingStream<Prediction, Error> { continuation in
             var tokens = tokens
             let maxTokens = tokens.count + maxNewTokens
             while tokens.count < maxTokens {
                 let timer = CodeTimer()
                 let tokenSignpostState = self.signposter.beginInterval("Predict", id: self.signposter.makeSignpostID(), "Token #\(tokens.count)")
+                let isPrompt = tokens.count == promptTokenCount
 
                 // Do a forward pass of the model.
                 var logits: MLMultiArray!
                 for (i, chunk) in self.chunks.enumerated() {
-                    let model = chunk.model!
+                    // TODO: don't hardcode
+                    let model = chunk.model(forTokenCount: tokens.count, newTokenCount: isPrompt ? 512 : 1)
 
                     // Wait for the KV cache to be asynchronously updated.
                     try await kvCacheProcessor.wait(forChunk: i)
 
-                    let inputs = try arrayStore.featureProvider(forChunk: i, model: model, tokens: tokens)
+                    let inputs = try await arrayStore.featureProvider(forChunk: i, model: model, tokens: tokens)
                     let options = MLPredictionOptions()
                     options.outputBackings = arrayStore.outputBackings(forChunk: i, model: model)
 
@@ -112,15 +116,29 @@ class ModelPipeline {
                     arrayStore.update(outputs: outputs, forChunk: i) // Using output backings should make this ~a noop.
 
                     // Start asynchronously updating the KV cache for the next token prediction.
-                    kvCacheProcessor.submit(inputs: inputs, outputs: outputs, forChunk: i)
+                    if #unavailable(macOS 15) {
+                        kvCacheProcessor.submit(inputs: inputs, outputs: outputs, forChunk: i)
+                    }
 
                     if outputs.featureNames.contains("logits") {
                         logits = outputs.featureValue(for: "logits")!.multiArrayValue!
                     }
                 }
 
-                let newToken = try await self.logitProcessor.argmax(logits: logits)
+                let newToken =  try await self.logitProcessor.argmax(logits: logits)
                 tokens.append(newToken)
+
+                // Switch to the generation model before yielding so that
+                // this is counted in the prompt processing time.
+                if isPrompt {
+                    // TODO: Support switching to larger context sizes.
+                    let inputLength = self.chunks[0].generationModel!.sequenceLength()
+                    let config = PipelineInferenceConfiguration(vocabSize: inferenceConfiguration.vocabSize,
+                                                                inputLength: inputLength, contextLength: 512)
+                    let resizeState = self.signposter.beginInterval("Resize Arrays")
+                    await arrayStore.resize(for: self, with: config)
+                    self.signposter.endInterval("Resize Arrays", resizeState)
+                }
 
                 continuation.yield(Prediction(newToken: newToken, allTokens: tokens, latency: timer.elapsed()))
 
@@ -131,7 +149,6 @@ class ModelPipeline {
         }
     }
 }
-
 
 extension ModelPipeline: CustomDebugStringConvertible {
     var debugDescription: String {
@@ -209,7 +226,8 @@ extension ModelPipeline {
 class PipelineChunk {
     let fileInfo: ChunkFileInfo
     let configuration: MLModelConfiguration
-    var model: MLModel?
+    var promptModel: MLModel?
+    var generationModel: MLModel?
 
     convenience init?(url: URL, configuration: MLModelConfiguration) {
         guard let fileInfo = ChunkFileInfo(url: url) else { return nil }
@@ -221,13 +239,44 @@ class PipelineChunk {
         self.configuration = configuration
     }
 
-    func load() {
-        guard model == nil else { return }
-        model = try! MLModel(contentsOf: fileInfo.url, configuration: configuration)
+    func load() async {
+        guard promptModel == nil else { return }
+
+        if #available(macOS 15.0, *) {
+            // TODO: Would be nice to load both in parallel if it helps on Sequoia after beta 1.
+            let asset = try! MLModelAsset(url: fileInfo.url)
+            promptModel = try! await MLModel.load(asset: asset,
+                                                  configuration: configuration.withFunctionName("input_512_context_512"))
+            generationModel = try! await MLModel.load(asset: asset,
+                                                      configuration: configuration.withFunctionName("input_1_context_512").withInfrequentReshapes())
+        } else {
+            promptModel = try! MLModel(contentsOf: fileInfo.url, configuration: configuration)
+            generationModel = promptModel
+        }
     }
 
     func unload() {
-        model = nil
+        promptModel = nil
+        generationModel = nil
+    }
+
+    func model(forTokenCount: Int, newTokenCount: Int) -> MLModel {
+        if newTokenCount > generationModel!.sequenceLength() {
+            return promptModel!
+        }
+        return generationModel!
+    }
+}
+
+extension MLModel {
+    func sequenceLength() -> Int {
+        var name = ""
+        for n in modelDescription.inputDescriptionsByName.keys {
+            if n == "x" || n == "input_ids" {
+                name = n
+            }
+        }
+        return modelDescription.inputDescriptionsByName[name]!.multiArrayConstraint!.shape.last!.intValue
     }
 }
 
@@ -309,7 +358,7 @@ struct CodeTimer {
 }
 
 protocol Loadable {
-    func load()
+    func load() async
     func unload()
 }
 

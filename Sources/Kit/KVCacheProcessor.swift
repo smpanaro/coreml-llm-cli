@@ -22,11 +22,10 @@ class KVCacheProcessor {
     func submit(inputs: MLFeatureProvider, outputs: MLFeatureProvider, forChunk chunkIndex: Int) {
         let pair = ChunkInputsOutputs(inputs: inputs, outputs: outputs)
         chunkTasks[chunkIndex] = Task<Int, Error> {
-            try await withThrowingTaskGroup(of: Int.self) { group in
+            try await withThrowingTaskGroup(of: Void.self) { group in
                 for blockIndex in 0..<inputs.blockCount() {
                     group.addTask {
                         try await self.predict(pair: pair, chunkIndex: chunkIndex, blockIndex: blockIndex)
-                        return 0
                     }
                 }
                 try await group.waitForAll()

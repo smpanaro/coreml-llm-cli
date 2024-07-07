@@ -9,6 +9,9 @@ struct CLI: AsyncParsableCommand {
     @Option(help: "Huggingface repo ID. e.g. smpanaro/Llama-2-7b-CoreML")
     var repoID: String? = nil
 
+    @Option(help: "Directory prefix in the Huggingface repo containing the model's mlmodelc files.")
+    var repoDirectory: String? = nil
+
     @Option(
         help: "The directory containing the model's mlmodelc files.",
         completion: .file(), transform: URL.init(fileURLWithPath:))
@@ -35,7 +38,7 @@ struct CLI: AsyncParsableCommand {
     mutating func run() async throws {
         var modelDirectory = localModelDirectory
         if let repoID {
-            modelDirectory = try await downloadModel(repoID: repoID)
+            modelDirectory = try await downloadModel(repoID: repoID, repoDirectory: repoDirectory)
         }
 
         guard let modelDirectory else {
@@ -61,11 +64,11 @@ struct CLI: AsyncParsableCommand {
     }
 
     /// Download a model and return the local directory URL.
-    func downloadModel(repoID: String) async throws -> URL {
+    func downloadModel(repoID: String, repoDirectory: String?) async throws -> URL {
         let hub = HubApi(hfToken: HubApi.defaultToken())
         let repo = Hub.Repo(id: repoID, type: .models)
 
-        let mlmodelcs = "*.mlmodelc/*"
+        let mlmodelcs = [repoDirectory, "*.mlmodelc/*"].compactMap { $0 }.joined(separator: "/")
         let filenames = try await hub.getFilenames(from: repo, matching: [mlmodelcs])
 
         let localURL = hub.localRepoLocation(repo)
@@ -75,7 +78,7 @@ struct CLI: AsyncParsableCommand {
             !FileManager.default.fileExists(atPath: $0.path(percentEncoded: false))
         }.count > 0
 
-        guard needsDownload else { return localURL }
+        guard needsDownload else { return localURL.appending(path: repoDirectory ?? "") }
 
         print("Downloading from \(repoID)...")
         if filenames.count == 0 {
@@ -91,7 +94,7 @@ struct CLI: AsyncParsableCommand {
         }
         print("Done.")
         print("Downloaded to \(downloadDir.path())")
-        return downloadDir
+        return downloadDir.appending(path: repoDirectory ?? "")
     }
 }
 
