@@ -92,17 +92,7 @@ scale = torch.linalg.norm(xeps, dim=1, keepdim=True)
 x = x / xeps
 ```
 
-This works on Sonoma but on Sequoia beta 1, there is a bug that causes `xeps[:,128:,...]` to be replaced with zeros when run on GPU or ANE. So additionally we squeeze/unsqueeze around concatentating to avoid it:
-
-```python
-B,C,_,S = x.shape
-eps = torch.ones(B,1,S) * (1e-5 * x.size(1)) ** 0.5
-xeps = torch.cat([x.squeeze(-2), eps], dim=1)
-scale = torch.linalg.norm(xeps, dim=1, keepdim=True)
-x = x / xeps.unsqueeze(-2)
-```
-
-If you work at Apple or want to dupe the feedback for this bug: FB14104692.
+This works both on Sonoma as well as Sequoia beta 3.
 
 ### Sync KV Cache Updates
 Since we have the luxury of separate prompt and generation models and a static context size, we can update the KV cache appropriately without using a secondary model (as in "Async KV Cache Updates" above). This incurs a slight overhead in each model chunk (possibly negligible), but it is simpler:
