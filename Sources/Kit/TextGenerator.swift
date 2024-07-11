@@ -45,7 +45,7 @@ class TextGenerator {
             let promptDuration = promptPrediction.latency.converted(to: .milliseconds)
 //            let promptAverage = promptDuration / 512.0 // Prompt always process 512 tokens.
             let promptThroughput = (512.0 / promptDuration.converted(to: .seconds))
-            print("\(promptDuration.value.formatted(numberFormat)) sec")
+            print("\(promptDuration.value.formatted(numberFormat)) ms")
 //            print("                \(promptAverage.value.formatted(numberFormat)) ms / token")
             print("                \(promptThroughput.value.formatted(numberFormat)) token / sec")
         }
