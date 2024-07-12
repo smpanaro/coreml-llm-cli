@@ -20,6 +20,7 @@ $ swift run -c release LLMCLI --repo-id smpanaro/Llama-2-7b-coreml --max-new-tok
 |--     |--             |--               |--            |-        |
 |M1 Max |77s            |7.5s             |4.97 +/- 0.11 |3.6W     |
 |M2     |-              |22.9s            |5.51 +/- 0.56 |4.5-7.2W |
+|M2 Pro |71s            |4.2s             |6.76 +/- 0.09 |-        |
 |M3     |64s            |5.47s            |7.12 +/- 0.16 |5.6W     |
 |M3 Max |-              |-                |7.6           |5.5W     |
 |M4 iPad|66s            |-                |7.76 +/- 0.36 |-        |
