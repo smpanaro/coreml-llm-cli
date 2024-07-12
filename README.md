@@ -30,6 +30,12 @@ MacOS 15 (Sequoia beta 1)
 |--     |--             |--               |--               |--            |-        |
 |M1 Max |161s           |0.72s            |1.053s           |5.58 +/- 0.35 |1.4W     |
 
+MacOS 15 (Sequoia beta 3)
+|Variant|First Load Time|Second+ Load Time|Prompt Processing|Tokens/Sec    |ANE Power|
+|--     |--             |--               |--               |--            |-        |
+|M1     |~90s           |2.91s            |1.15s            |4.26 +/- 0.64 |-        |
+|M3 Pro |~70s           |0.5s             |0.73s            |11.72 +/- 0.29|-        |
+
 ## Inference Optimizations
 This CLI implements a couple optimizations that might be useful/interesting even in medium-sized and smaller models.
 
