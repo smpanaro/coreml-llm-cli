@@ -10,6 +10,7 @@ class ModelPipeline {
     let cacheProcessorModel: DeferredModel
 //    let promptCacheProcessorModel: DeferredModel // TODO
     let logitProcessor: LogitProcessor
+    let lowMemoryMode: Bool
 
     var loadableProcessors: [Loadable] {
         [cacheProcessorModel, logitProcessor]
@@ -17,11 +18,12 @@ class ModelPipeline {
 
     let signposter = OSSignposter(subsystem: "com.stephenpanaro.llm-cli", category: "ModelPipeline")
 
-    init(chunks: [PipelineChunk], cacheProcessor: DeferredModel, logitProcessor: LogitProcessor) {
+    init(chunks: [PipelineChunk], cacheProcessor: DeferredModel, logitProcessor: LogitProcessor, lowMemoryMode: Bool) {
         self.chunks = chunks
         precondition(chunks.count > 0)
         self.cacheProcessorModel = cacheProcessor
         self.logitProcessor = logitProcessor
+        self.lowMemoryMode = lowMemoryMode
     }
 
     /// Load the pipeline gradually to minimize resource usage
@@ -48,8 +50,10 @@ class ModelPipeline {
     }
 
     func load() async throws {
-//        await prewarm() // Doesn't seem to help on Sequoia since model caching is iffy (in beta 1 at least).
-        print("Loading models  : ", terminator: "")
+        if lowMemoryMode {
+            await prewarm() // Doesn't seem to help on Sequoia since model caching is iffy (in beta 4 at least).
+        }
+        print("Loading prompt models     : ", terminator: "")
         fflush(stdout)
 
         // Should be fast, sync is fine.
@@ -58,8 +62,8 @@ class ModelPipeline {
         }
 
         for (i, chunk) in chunks.enumerated() {
-            let state = signposter.beginInterval("Prepare", id: signposter.makeSignpostID(), "Load Chunk \(i)")
-            await chunk.load()
+            let state = signposter.beginInterval("Prepare", id: signposter.makeSignpostID(), "Load Prompt Chunk \(i)")
+            await chunk.loadPrompt()
             signposter.endInterval("", state)
             print("*", terminator: "")
             fflush(stdout)
@@ -130,8 +134,13 @@ class ModelPipeline {
 
                 // Switch to the generation model before yielding so that
                 // this is counted in the prompt processing time.
+                var extraLoadLatency = Measurement<UnitDuration>(value: 0, unit: .milliseconds)
                 if isPrompt {
-                    // TODO: Support switching to larger context sizes.
+                    let extraLoadTimer = CodeTimer()
+                    await self.swapToGenerationModels()
+                    extraLoadLatency = extraLoadTimer.elapsed()
+
+                    // TODO: Support switching to larger context sizes. (Or maybe not if the overhead of loading is too great.)
                     let inputLength = self.chunks[0].generationModel!.sequenceLength()
                     let config = PipelineInferenceConfiguration(vocabSize: inferenceConfiguration.vocabSize,
                                                                 inputLength: inputLength, contextLength: 512)
@@ -140,13 +149,37 @@ class ModelPipeline {
                     self.signposter.endInterval("Resize Arrays", resizeState)
                 }
 
-                continuation.yield(Prediction(newToken: newToken, allTokens: tokens, latency: timer.elapsed()))
+                continuation.yield(Prediction(
+                    newToken: newToken,
+                    allTokens: tokens,
+                    latency: timer.elapsed() - extraLoadLatency,
+                    extraLoadLatency: extraLoadLatency))
 
                 self.signposter.endInterval("Predict", tokenSignpostState, "\(newToken)")
             }
 
             continuation.finish()
         }
+    }
+
+    func swapToGenerationModels() async {
+        // Doing all unloads up front instead of (unload prompt 1, load generation 1, unload prompt 2, ...)
+        // improves performance on M1 Max Sequoia beta 4.
+        for c in chunks {
+            c.unload()
+        }
+
+        print("Loading generation models : ", terminator: "")
+        fflush(stdout)
+        for (i, c) in chunks.enumerated() {
+            let state = signposter.beginInterval("Prepare", id: signposter.makeSignpostID(), "Load Generation Chunk \(i)")
+            await c.loadGeneration()
+            signposter.endInterval("", state)
+
+            print("*", terminator: "")
+            fflush(stdout)
+        }
+        print()
     }
 }
 
@@ -166,6 +199,7 @@ extension ModelPipeline {
         modelPrefix: String?,
         cacheProcessorModelName: String,
         logitProcessorModelName: String,
+        lowMemoryMode: Bool,
         primaryCompute: MLComputeUnits = .cpuAndNeuralEngine,
         chunkLimit: Int? = nil
     ) throws -> ModelPipeline {
@@ -219,7 +253,7 @@ extension ModelPipeline {
         logitProcessorModelConfig.modelDisplayName = "Logit Processor"
         let logitProcessor = LogitProcessor(model: DeferredModel(url: logitProcessorURL, configuration: logitProcessorModelConfig))
 
-        return ModelPipeline(chunks: chunks, cacheProcessor: cacheProcessor, logitProcessor: logitProcessor)
+        return ModelPipeline(chunks: chunks, cacheProcessor: cacheProcessor, logitProcessor: logitProcessor, lowMemoryMode: lowMemoryMode)
     }
 }
 
@@ -244,11 +278,8 @@ class PipelineChunk {
 
         if #available(macOS 15.0, *) {
             // TODO: Would be nice to load both in parallel if it helps on Sequoia after beta 1.
-            let asset = try! MLModelAsset(url: fileInfo.url)
-            promptModel = try! await MLModel.load(asset: asset,
-                                                  configuration: configuration.withFunctionName("input_512_context_512"))
-            generationModel = try! await MLModel.load(asset: asset,
-                                                      configuration: configuration.withFunctionName("input_1_context_512").withInfrequentReshapes())
+            await loadPrompt()
+            await loadGeneration()
         } else {
             promptModel = try! MLModel(contentsOf: fileInfo.url, configuration: configuration)
             generationModel = promptModel
@@ -260,8 +291,22 @@ class PipelineChunk {
         generationModel = nil
     }
 
+    func loadPrompt() async {
+        guard #available(macOS 15.0, *) else { return }
+        let asset = try! MLModelAsset(url: fileInfo.url)
+        promptModel = try! await MLModel.load(asset: asset,
+                                              configuration: configuration.withFunctionName("input_512_context_512"))
+    }
+
+    func loadGeneration() async {
+        guard #available(macOS 15.0, *) else { return }
+        let asset = try! MLModelAsset(url: fileInfo.url)
+        generationModel = try! await MLModel.load(asset: asset,
+                                                  configuration: configuration.withFunctionName("input_1_context_512").withInfrequentReshapes())
+    }
+
     func model(forTokenCount: Int, newTokenCount: Int) -> MLModel {
-        if newTokenCount > generationModel!.sequenceLength() {
+        if generationModel == nil || newTokenCount > generationModel!.sequenceLength() {
             return promptModel!
         }
         return generationModel!
@@ -346,6 +391,7 @@ struct Prediction {
     let newToken: Int
     let allTokens: [Int]
     let latency: Measurement<UnitDuration>
+    let extraLoadLatency: Measurement<UnitDuration>
 }
 
 struct CodeTimer {

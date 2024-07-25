@@ -16,17 +16,23 @@ class TextGenerator {
 
         let loadTimer = CodeTimer()
         try await pipeline.load()
-        let loadDuration = loadTimer.elapsed()
+        let initialLoadDuration = loadTimer.elapsed()
 
         let tokens = tokenizer.encode(text: text)
 
         var predictions = [Prediction]()
-        tokens.forEach { print($0, terminator: " ") }
-        print("|", terminator: " ")
-        fflush(stdout)
 
         for try await prediction in try pipeline.predict(tokens: tokens, maxNewTokens: maxNewTokens) {
             predictions.append(prediction)
+
+            // Possible for some loading to happen after the first token (prompt) prediction
+            // so keep the UI tidy (don't worry the load time is still accounted).
+            if predictions.count == 1 {
+                tokens.forEach { print($0, terminator: " ") }
+                print("|", terminator: " ")
+                fflush(stdout)
+            }
+
             print(prediction.newToken, terminator: " ")
             fflush(stdout)
         }
@@ -35,6 +41,7 @@ class TextGenerator {
         print(tokenizer.decode(tokens: predictions.last?.allTokens ?? tokens))
         print()
 
+        let loadDuration = predictions.map { $0.extraLoadLatency }.reduce(initialLoadDuration, { $0 + $1 })
         print("Compile + Load: \(loadDuration.converted(to: .seconds).value.formatted(.number.precision(.fractionLength(2)))) sec")
 
         let numberFormat = FloatingPointFormatStyle<Double>.number.precision(.fractionLength(2))

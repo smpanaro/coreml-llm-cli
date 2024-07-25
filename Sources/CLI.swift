@@ -35,6 +35,9 @@ struct CLI: AsyncParsableCommand {
     @Option(help: "Maximum number of new tokens to generate.")
     var maxNewTokens: Int = 60
 
+    @Flag(help: "Load using less memory. Mainly helpful for the initial load. Expect this to be slower.")
+    var lowMemoryMode: Bool = false
+
     mutating func run() async throws {
         var modelDirectory = localModelDirectory
         if let repoID {
@@ -50,7 +53,8 @@ struct CLI: AsyncParsableCommand {
             folder: modelDirectory,
             modelPrefix: localModelPrefix,
             cacheProcessorModelName: cacheProcessorModelName,
-            logitProcessorModelName: logitProcessorModelName
+            logitProcessorModelName: logitProcessorModelName,
+            lowMemoryMode: lowMemoryMode
             // For debugging.
 //            primaryCompute: .cpuOnly
 //            chunkLimit: 1
@@ -72,12 +76,31 @@ struct CLI: AsyncParsableCommand {
         let filenames = try await hub.getFilenames(from: repo, matching: [mlmodelcs])
 
         let localURL = hub.localRepoLocation(repo)
-        let needsDownload = filenames.map {
+        let localFileURLs = filenames.map {
             localURL.appending(component: $0)
-        }.filter {
+        }
+        let anyNotExists = localFileURLs.filter {
             !FileManager.default.fileExists(atPath: $0.path(percentEncoded: false))
         }.count > 0
 
+        // swift-transformers doesn't offer a way to know if we're up to date.
+        let newestTimestamp = localFileURLs.filter {
+            FileManager.default.fileExists(atPath: $0.path(percentEncoded: false))
+        }.compactMap {
+           let attrs = try! FileManager.default.attributesOfItem(atPath: $0.path(percentEncoded: false))
+           return attrs[.modificationDate] as? Date
+        }.max() ?? Date.distantFuture
+        let lastUploadDate = Date(timeIntervalSince1970: 1721874750)
+        let isStale = repoID == "smpanaro/Llama-2-7b-coreml" && repoDirectory == "sequoia" && newestTimestamp < lastUploadDate
+
+        // I would rather not delete things automatically.
+        if isStale {
+            print("⚠️ You have an old model downloaded. Please move the following directory to the Trash and try again:")
+            print(localURL.appending(path: repoDirectory ?? "").path())
+            throw CLIError.staleFiles
+        }
+
+        let needsDownload = anyNotExists || isStale
         guard needsDownload else { return localURL.appending(path: repoDirectory ?? "") }
 
         print("Downloading from \(repoID)...")
@@ -100,4 +123,5 @@ struct CLI: AsyncParsableCommand {
 
 enum CLIError: Error {
     case noModelFilesFound
+    case staleFiles
 }

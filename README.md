@@ -16,25 +16,30 @@ To download + measure:
 $ swift run -c release LLMCLI --repo-id smpanaro/Llama-2-7b-coreml --repo-directory sequoia --max-new-tokens 80
 ```
 
-MacOS 14 (Sonoma)
-|Variant|First Load Time|Second+ Load Time|Tokens/Sec    |ANE Power|
-|--     |--             |--               |--            |-        |
-|M1 Max |77s            |7.5s             |4.97 +/- 0.11 |3.6W     |
-|M2     |-              |22.9s            |5.51 +/- 0.56 |4.5-7.2W |
-|M3     |64s            |5.47s            |7.12 +/- 0.16 |5.6W     |
-|M3 Max |-              |-                |7.6           |5.5W     |
-|M4 iPad|66s            |-                |7.76 +/- 0.36 |-        |
+macOS 14 (Sonoma)
+|Variant|First Load Time|Second+ Load Time|Tokens/Sec  |ANE Power|
+|--     |--             |--               |--          |-        |
+|M1 Max |77s            |7.5s             |4.97 ± 0.11 |3.6W     |
+|M2     |-              |22.9s            |5.51 ± 0.56 |4.5-7.2W |
+|M3     |64s            |5.47s            |7.12 ± 0.16 |5.6W     |
+|M3 Max |-              |-                |7.6         |5.5W     |
+|M4 iPad|66s            |-                |7.76 ± 0.36 |-        |
 
-MacOS 15 (Sequoia beta 1)
-|Variant|First Load Time|Second+ Load Time|Prompt Processing|Tokens/Sec    |ANE Power|
-|--     |--             |--               |--               |--            |-        |
-|M1 Max |161s           |0.72s            |1.053s           |5.58 +/- 0.35 |1.4W     |
+macOS 15 (Sequoia beta 1)
+|Variant|First Load Time|Second+ Load Time|Prompt Processing|Tokens/Sec  |ANE Power|
+|--     |--             |--               |--               |--          |-        |
+|M1 Max |161s           |0.72s            |1.053s           |5.58 ± 0.35 |1.4W     |
 
-MacOS 15 (Sequoia beta 3)
-|Variant|First Load Time|Second+ Load Time|Prompt Processing|Tokens/Sec    |ANE Power|
-|--     |--             |--               |--               |--            |-        |
-|M1     |~90s           |2.91s            |1.15s            |4.26 +/- 0.64 |-        |
-|M3 Pro |~70s           |0.5s             |0.73s            |11.72 +/- 0.29|-        |
+macOS 15 (Sequoia beta 3)
+|Variant|First Load Time|Second+ Load Time|Prompt Processing|Tokens/Sec   |ANE Power|
+|--     |--             |--               |--               |--           |-        |
+|M1     |~90s           |2.91s            |1.15s            |4.26 ± 0.64  |-        |
+|M3 Pro |~70s           |0.5s             |0.73s            |11.72 ± 0.29 |-        |
+
+macOS 15 (Sequoia beta 4, includes cache optimizations)
+|Variant|First Load Time|Second+ Load Time|Prompt Processing|Tokens/Sec  |ANE Power|
+|--     |--             |--               |--               |--          |-        |
+|M1 Max |158s           |0.74s            |1.04s            |6.87 ± 0.13 |1.4W     |
 
 ## Inference Optimizations
 This CLI implements a couple optimizations that might be useful/interesting even in medium-sized and smaller models.
@@ -98,7 +103,7 @@ scale = torch.linalg.norm(xeps, dim=1, keepdim=True)
 x = x / xeps
 ```
 
-This works both on Sonoma as well as Sequoia beta 3.
+This works both on Sonoma as well as Sequoia beta 3+.
 
 ### Sync KV Cache Updates
 Since we have the luxury of separate prompt and generation models and a static context size, we can update the KV cache appropriately without using a secondary model (as in "Async KV Cache Updates" above). This incurs a slight overhead in each model chunk (possibly negligible), but it is simpler:
@@ -109,3 +114,37 @@ Since we have the luxury of separate prompt and generation models and a static c
 - The output cache is always computed from the full cache as: `full_cache[...,1:]`
 
 Additionally, the KV cache update model increases the CPU usage during generation from ~13% to ~60% on my M1 Max. Skipping it avoids the unnecessary excess. (From Instruments it looks like this might be caused by some copying/casting, will file a feedback if this persists in beta 3.)
+
+### Model Load Sequencing
+One downside of separate prompt and generation models is that loading and retaining both at the same time incurs overhead that is otherwise absent when retaining just one of them. It's possible that this is limited to the M1 series but it is significant: ~5-6 tok/sec → ~3-4 tok/sec.
+
+The overhead can be seen in Instruments[^1] as calls to `H11ANEIn::ProgramReMap(H11ANEProgramBufferParamsStruct*, bool)` that occur at the start of a request to the ANE. When both the prompt and generation MLModel instances are loaded and retained, this overhead occurs between most, if not all, chunks of the generation pipeline and adds 7-10ms each.
+
+To avoid this, we load the prompt model chunks first and process the prompt. Then we unload all of those MLModels (set them equal to nil) and afterwards load each chunk of the generation model. This does not increase the total load processing time, just rearranges when it occurs.
+
+```
+                                        ┌────────────────────────┐
+┌─────────────────────────┐┌──────────┐┌┤Slow (Lots of Overhead) ├
+│     Load Prompt and     ││ Process  ││└────────────────────────┘
+│    Generation Chunks    ││  Prompt  ││    Generate Tokens...
+└─────────────────────────┘└──────────┘└──────────────────────────
+
+                                        ┌───────────────────────┐
+┌────────────┐┌──────────┐ ┌──────────┐┌┤ Fast (Lower Overhead) ├─
+│Load Prompt ││ Process  │││Load Gen. ││└───────────────────────┘
+│   Chunks   ││  Prompt  │││  Chunks  ││    Generate Tokens...
+└────────────┘└──────────┘│└──────────┘└──────────────────────────
+                          ▼
+                    Unload Prompt
+                       Chunks
+```
+
+[^1]: Check both "High Frequency" and "Record Kernel Callstacks" for the Time Profiler
+
+### Input:Cache Ratio
+This model has a 512 context window. After prompt processing the two primary inputs to the model are:
+
+- `input_ids`: the newest N tokens
+- `kv_cache`: the KV cache for the oldest 512-N tokens
+
+Interestingly N = 4 is marginally (~3%) but consistently faster than N = 1 so we use that.
