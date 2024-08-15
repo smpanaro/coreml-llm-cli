@@ -46,7 +46,7 @@ As recommended in Apple's [Deploying Transformers on the Apple Neural Engine](ht
 
 Unfortunately, attention requires a (B,C,1,S) shape tensor so we cannot simply run the whole model in (B,C,8,8) for the full 50% speedup. Instead we reshape to (B,C,1,64) before[^1] the QKV projections and back to (B,C,8,8) just before the attention out projection. This seems to minimize the cost of reshapes and allows us to achieve a ~20% overall speedup.
 
-[^1] Yes, before. Doing less reshapes (1 instead of 3) is faster than doing these smaller convolutions in (8,8).
+[^1]: Yes, before. Doing less reshapes (1 instead of 3) is faster than doing these smaller convolutions in (8,8).
 
 ### Model Chunking
 The model is split into multiple smaller CoreML model chunks:
