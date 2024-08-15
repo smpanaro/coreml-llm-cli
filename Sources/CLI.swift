@@ -65,8 +65,8 @@ struct CLI: AsyncParsableCommand {
         let hub = HubApi(hfToken: HubApi.defaultToken())
         let repo = Hub.Repo(id: repoID, type: .models)
 
-        let mlmodelcs = "*.mlmodelc/*"
-        let filenames = try await hub.getFilenames(from: repo, matching: [mlmodelcs])
+        let mlmodelcs = ["Llama*.mlmodelc/*", "logit*", "generation*"]
+        let filenames = try await hub.getFilenames(from: repo, matching: mlmodelcs)
 
         let localURL = hub.localRepoLocation(repo)
         let localFileURLs = filenames.map {
@@ -101,7 +101,7 @@ struct CLI: AsyncParsableCommand {
             throw CLIError.noModelFilesFound
         }
 
-        let downloadDir = try await hub.snapshot(from: repo, matching: [mlmodelcs]) { progress in
+        let downloadDir = try await hub.snapshot(from: repo, matching: mlmodelcs) { progress in
             let percent = progress.fractionCompleted * 100
             if !progress.isFinished {
                 print("\(percent.formatted(.number.precision(.fractionLength(0))))%", terminator: "\r")
