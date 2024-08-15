@@ -16,20 +16,37 @@ To download + measure:
 $ swift run -c release LLMCLI --repo-id smpanaro/Llama-2-7b-coreml --max-new-tokens 80
 ```
 
-|Variant|First Load Time|Second+ Load Time|Tokens/Sec    |ANE Power|
-|--     |--             |--               |--            |-        |
-|M1 Max |77s            |7.5s             |4.97 +/- 0.11 |3.6W     |
-|M2     |-              |22.9s            |5.51 +/- 0.56 |4.5-7.2W |
-|M2 Pro |71s            |4.2s             |6.76 +/- 0.09 |-        |
-|M3     |64s            |5.47s            |7.12 +/- 0.16 |5.6W     |
-|M3 Max |-              |-                |7.6           |5.5W     |
-|M4 iPad|66s            |-                |7.76 +/- 0.36 |-        |
+|Variant|1st Load Time|2nd+ Load Time|Tokens/Sec  |ANE Power|
+|--     |--           |--            |--          |-        |
+|M1 Max |113s         |8.1s          |6.42 ± 0.29 |4.0W     |
+
+For M2-M4, consider the times for Model Version 1 as a lower bound:
+
+<details><summary>Model Version 1 (a76a14d)</summary>
+
+|Variant|1st Load Time|2nd+ Load Time|Tokens/Sec  |ANE Power|
+|--     |--           |--            |--          |-        |
+|M1 Max |77s          |7.5s          |4.97 ± 0.11 |3.6W     |
+|M2     |-            |22.9s         |5.51 ± 0.56 |4.5-7.2W |
+|M2 Pro |71s          |4.2s          |6.76 ± 0.09 |-        |
+|M3     |64s          |5.47s         |7.12 ± 0.16 |5.6W     |
+|M3 Max |-            |-             |7.6         |5.5W     |
+|M4 iPad|66s          |-             |7.76 ± 0.36 |-        |
+
+</details>
 
 ## Inference Optimizations
 This CLI implements a couple optimizations that might be useful/interesting even in medium-sized and smaller models.
 
 ### CVPixelBuffer/IOSurface MLMultiArrays
 All float16 model input and output arrays are created with IOSurface-backed CVPixelBuffers ([docs](https://developer.apple.com/documentation/coreml/mlmultiarray/3882834-init)). This avoids unnecessary copying that can occur when going between CPU and ANE, especially for large arrays like the KV cache.
+
+### 20% Faster Convolutions With Reshaping
+As recommended in Apple's [Deploying Transformers on the Apple Neural Engine](https://machinelearning.apple.com/research/neural-engine-transformers), this model uses a 4D tensor layout: (Batch, Channels, 1, Sequence). We process 64 tokens at a time, so most tensors are (B,C,1,64). It turns out that the convolutions in the MLP are 50% faster when the tensor is (B,C,8,8). This seems to hold across hardware versions (M1, A14, A16, A17 Pro) so we can leverage it for an extra speedup.
+
+Unfortunately, attention requires a (B,C,1,S) shape tensor so we cannot simply run the whole model in (B,C,8,8) for the full 50% speedup. Instead we reshape to (B,C,1,64) before[^1] the QKV projections and back to (B,C,8,8) just before the attention out projection. This seems to minimize the cost of reshapes and allows us to achieve a ~20% overall speedup.
+
+[^1] Yes, before. Doing less reshapes (1 instead of 3) is faster than doing these smaller convolutions in (8,8).
 
 ### Model Chunking
 The model is split into multiple smaller CoreML model chunks:
@@ -45,19 +62,37 @@ This model uses an ANE-compatible KV cache which needs to be shifted prior to ea
 To take advantage of this, the new sections of the KV cache are returned from the model and a separate CoreML model combines them with the prior cache values asynchronously. For Llama this saves ~1-2ms per chunk (~20ms overall).
 
 ```
-[ old KV cache (length 448) ]   [ hidden states (length 64) ]
-                     ↘             ↙
-                      [chunk model]
-                     ↙             ↘
-[ new KV cache (length 64)  ]   [ new hidden states (length 64) ]
+┌──────────────┐      ┌───────────────┐
+│ Old KV Cache │      │ Hidden States │
+│ (Length 448) │      │  (Length 64)  │
+└──────────────┘      └───────────────┘
+              ↘        ↙
+             ┌───────────┐
+             │Chunk Model│
+             └───────────┘
+              ↙        ↘
+┌──────────────┐      ┌─────────────────┐
+│ New KV Cache │      │New Hidden States│
+│ (Length 64)  │      │   (Length 64)   │
+└──────────────┘      └─────────────────┘
 
-
-Async after the chunk prediction completes:
-[ old KV cache (length 448) ]   [ new KV cache (length 64) ]
-                   ↘                     ↙
-                    [ cache update model]
-                              ↓
-               [ updated KV cache (length 448) ]
+┌───────────────────────────────────────────┐
+│Async after the chunk prediction completes:│
+│                                           │
+│  ┌──────────────┐     ┌──────────────┐    │
+│  │ Old KV Cache │     │ New KV Cache │    │
+│  │ (Length 448) │     │ (Length 64)  │    │
+│  └──────────────┘     └──────────────┘    │
+│               ↘         ↙                 │
+│           ┌──────────────────┐            │
+│           │Cache Update Model│            │
+│           └──────────────────┘            │
+│                    ↓                      │
+│            ┌────────────────┐             │
+│            │Updated KV Cache│             │
+│            │  (Length 448)  │             │
+│            └────────────────┘             │
+└───────────────────────────────────────────┘
 ```
 
 This pattern would probably work for other non-critical path computations too.
