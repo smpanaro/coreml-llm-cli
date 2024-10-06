@@ -128,17 +128,66 @@ extension MultiArrayStore {
 
         var cacheFeatures = inputFeatures(forChunk: chunkIndex, model: model)
 
+        // Input IDs is populated in concert with KV cache updates.
+        //
+        //                            0 1 2 3 4
+        //  _ _ _ _ _ _ _ _ _ _ _ _ _
+        // ┌─────────────────────────┬────────┐
+        // └───────────Cache─────────┴─Inputs─┘
+        //
+        //
+        //                            5 _ _ _ _
+        //  _ _ _ _ _ _ _ _ 0 1 2 3 4
+        // ┌─────────────────────────┬────────┐
+        // └───────────Cache─────────┴─Inputs─┘
+        //
+        //
+        //                            5 6 _ _ _
+        //  _ _ _ _ _ _ _ _ 0 1 2 3 4
+        // ┌─────────────────────────┬────────┐
+        // └───────────Cache─────────┴─Inputs─┘
+        //
+        //            ┌ ─ ─ ─ ─ ─ ─ ┐
+        //             Same for 7-9
+        //            └ ─ ─ ─ ─ ─ ─ ┘
+        //
+        //                            5 6 7 8 9
+        //  _ _ _ _ _ _ _ _ 0 1 2 3 4
+        // ┌─────────────────────────┬────────┐
+        // └───────────Cache─────────┴─Inputs─┘
+        //
+        //  ◀━━━━━━━━━━━━━Shift!━━━━━━━━━━━━━━━
+        //
+        //                             A _ _ _ _
+        //   _ _ _ 0 1 2 3 4 5 6 7 8 9
+        //  ┌─────────────────────────┬────────┐
+        //  └───────────Cache─────────┴─Inputs─┘
+        //
+        //              ┌ ─ ─ ─ ─ ─
+        //                 Repeat  │
+        //              └ ─ ─ ─ ─ ─
+        var padCount = 0
         let inputDescriptions = model.modelDescription.inputDescriptionsByName
         if let inputIDsConstraint = inputDescriptions["input_ids"]?.multiArrayConstraint {
-            let shape = inputIDsConstraint.shape.map { $0.intValue }
-            let padCount = max(0, shape.last! - tokens.count)
-            let paddedTokens = Array(repeating: Int32(0), count: padCount) + tokens.suffix(shape.last!).map { Int32($0) }
-            let inputIDs = MLShapedArray<Int32>(scalars: paddedTokens, shape: shape)
+            let inputShape = inputIDsConstraint.shape.map { $0.intValue }
+            let inputLength = inputShape.last!
+
+            // For inputLength 64, tokens.count -> suffixLength:
+            // 0 -> 0, 5 -> 5, 64 -> 64, 65 -> 1, 128 -> 64
+            let suffixLength = tokens.isEmpty ? 0 : (tokens.count - 1) % inputLength + 1
+            let inputTokens = tokens.suffix(suffixLength).map { Int32($0) }
+            padCount = max(0, inputLength - inputTokens.count)
+            let paddedInputTokens = inputTokens + Array(repeating: Int32(0), count: padCount)
+            let inputIDs = MLShapedArray<Int32>(scalars: paddedInputTokens, shape: inputShape)
             cacheFeatures["input_ids"] = MLMultiArray(inputIDs)
         }
 
         if inputDescriptions["full_sequence_length"]?.multiArrayConstraint != nil {
-            let fullSequenceLength = MLShapedArray(repeating: Int32(tokens.count), shape: [1])
+            // For example: [Cache0 Cache1][Input2 Input3 Pad0]
+            // The causal mask prevents Pad0  from impacting
+            // the InputN token predictions. We must include it
+            // here so RoPE is correct for the InputN tokens.
+            let fullSequenceLength = MLShapedArray(repeating: Int32(tokens.count + padCount), shape: [1])
             cacheFeatures["full_sequence_length"] = MLMultiArray(fullSequenceLength)
         }
 

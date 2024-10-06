@@ -57,7 +57,7 @@ The model is split into multiple smaller CoreML model chunks:
 This allows for faster model loading and enables async KV cache manipulation (see below).
 
 ### Async KV Cache Updates
-This model uses an ANE-compatible KV cache which needs to be shifted prior to each prediction. Due to the model chunking this does not need to happen synchronously in each chunk. It only needs to be updated before the next chunk prediction (~1 full forward pass in the future).
+This model uses an ANE-compatible KV cache which needs to be shifted periodically. Due to the model chunking this does not need to happen synchronously in each chunk. It only needs to be updated before the next chunk prediction (~1 full forward pass in the future).
 
 To take advantage of this, the new sections of the KV cache are returned from the model and a separate CoreML model combines them with the prior cache values asynchronously. For Llama this saves ~1-2ms per chunk (~20ms overall).
 

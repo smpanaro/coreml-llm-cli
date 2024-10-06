@@ -23,13 +23,13 @@ class LogitProcessor {
 //    func multinomial(logits: MLMultiArray) async throws -> Int {
 //    }
 
-    func argmax(logits: MLMultiArray) async throws -> Int {
+    func argmax(logits: MLMultiArray, index: Int? = nil) async throws -> Int {
         let state = signposter.beginInterval("Sample", "Argmax")
         defer { signposter.endInterval("Sample", state) }
 
         let outputs = try await predict(logits: logits)
         let argmaxArray = MLShapedArray<Int32>(outputs.featureValue(for: "argmax")!.multiArrayValue!)
-        let prediction = argmaxArray[0, argmaxArray.shape[1] - 1].scalar ?? -1
+        let prediction = argmaxArray[0, index ?? (argmaxArray.shape[1] - 1)].scalar ?? -1
         return Int(prediction)
     }
 

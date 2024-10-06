@@ -18,7 +18,7 @@ struct CLI: AsyncParsableCommand {
     var localModelPrefix: String?
 
     @Option(help: "KV cache processor model filename, located in the model directory.")
-    var cacheProcessorModelName: String = "generation-cache-processor.mlmodelc"
+    var cacheProcessorModelName: String = "cache-processor.mlmodelc"
 
     @Option(help: "Logit processor model filename, located in the model directory.")
     var logitProcessorModelName: String = "logit-processor.mlmodelc"
@@ -65,7 +65,7 @@ struct CLI: AsyncParsableCommand {
         let hub = HubApi(hfToken: HubApi.defaultToken())
         let repo = Hub.Repo(id: repoID, type: .models)
 
-        let mlmodelcs = ["Llama*.mlmodelc/*", "logit*", "generation*"]
+        let mlmodelcs = ["Llama*.mlmodelc/*", "logit*", "cache*"]
         let filenames = try await hub.getFilenames(from: repo, matching: mlmodelcs)
 
         let localURL = hub.localRepoLocation(repo)

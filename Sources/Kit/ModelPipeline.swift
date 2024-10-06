@@ -8,7 +8,6 @@ class ModelPipeline {
     let chunks: [PipelineChunk]
     var inferenceConfiguration: PipelineInferenceConfiguration? // Can't retrieve this until models are loaded.
     let cacheProcessorModel: DeferredModel
-//    let promptCacheProcessorModel: DeferredModel // TODO
     let logitProcessor: LogitProcessor
 
     var loadableProcessors: [Loadable] {
@@ -103,6 +102,7 @@ class ModelPipeline {
                     try await kvCacheProcessor.wait(forChunk: i)
 
                     let inputs = try arrayStore.featureProvider(forChunk: i, model: model, tokens: tokens)
+
                     let options = MLPredictionOptions()
                     options.outputBackings = arrayStore.outputBackings(forChunk: i, model: model)
 
@@ -111,15 +111,20 @@ class ModelPipeline {
                     self.signposter.endInterval("Predict", predictState)
                     arrayStore.update(outputs: outputs, forChunk: i) // Using output backings should make this ~a noop.
 
-                    // Start asynchronously updating the KV cache for the next token prediction.
-                    kvCacheProcessor.submit(inputs: inputs, outputs: outputs, forChunk: i)
+                    // Update the cache (async) each time a full set of input tokens is processed.
+                    // e.g. if the model takes in 64 input tokens at once, update when tokens
+                    // is length 64, 128, 192, etc.
+                    if tokens.count % inferenceConfiguration.inputLength == 0 {
+                        kvCacheProcessor.submit(inputs: inputs, outputs: outputs, forChunk: i)
+                    }
 
                     if outputs.featureNames.contains("logits") {
                         logits = outputs.featureValue(for: "logits")!.multiArrayValue!
                     }
                 }
 
-                let newToken = try await self.logitProcessor.argmax(logits: logits)
+                let newTokenIndex = tokens.isEmpty ? 0 : (tokens.count - 1) % inferenceConfiguration.inputLength
+                let newToken = try await self.logitProcessor.argmax(logits: logits, index: newTokenIndex)
                 tokens.append(newToken)
 
                 continuation.yield(Prediction(newToken: newToken, allTokens: tokens, latency: timer.elapsed()))

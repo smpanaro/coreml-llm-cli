@@ -91,8 +91,8 @@ struct ChunkInputsOutputs {
     func cacheProcessorOptions(forBlock blockIndex: Int) -> MLPredictionOptions {
         let opts = MLPredictionOptions()
         opts.outputBackings = [
-            "generation_k_cache": inputs.featureValue(for: "k_cache_\(blockIndex)")!.multiArrayValue!,
-            "generation_v_cache": inputs.featureValue(for: "v_cache_\(blockIndex)")!.multiArrayValue!,
+            "updated_k_cache": inputs.featureValue(for: "k_cache_\(blockIndex)")!.multiArrayValue!,
+            "updated_v_cache": inputs.featureValue(for: "v_cache_\(blockIndex)")!.multiArrayValue!,
         ]
         return opts
     }
