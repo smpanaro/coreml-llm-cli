@@ -35,18 +35,24 @@ class TextGenerator {
         print()
 
         print("Compile + Load: \(loadDuration.converted(to: .seconds).value.formatted(.number.precision(.fractionLength(2)))) sec")
+        let numberFormat = FloatingPointFormatStyle<Double>.number.precision(.fractionLength(2))
+
+        let promptLatencies = predictions.compactMap { $0.promptLatency?.converted(to: .milliseconds).value }
+        if !promptLatencies.isEmpty {
+            let averagePrompt = Measurement(value: promptLatencies.mean(), unit: UnitDuration.milliseconds)
+            print("Prompt        : \(averagePrompt.value.formatted(numberFormat)) ms")
+        }
+
         print("Generate      :", terminator: " ")
 
-        let latencies = predictions.map { $0.latency.converted(to: .milliseconds).value }
+        let latencies = predictions.compactMap { $0.latency?.converted(to: .milliseconds).value }
         let average = Measurement(value: latencies.mean(), unit: UnitDuration.milliseconds)
         let stdev = Measurement(value: latencies.stdev(), unit: UnitDuration.milliseconds)
-        let numberFormat = FloatingPointFormatStyle<Double>.number.precision(.fractionLength(2))
         print("\(average.value.formatted(numberFormat)) +/- \(stdev.value.formatted(numberFormat)) ms / token")
 
-        let throughputs = predictions.map { 1 / $0.latency.converted(to: .seconds).value }
+        let throughputs = predictions.compactMap { $0.latency?.converted(to: .seconds).value }.map { 1 / $0 }
         let averageThroughput = Measurement(value: throughputs.mean(), unit: UnitDuration.seconds)
         let stdevThroughput = Measurement(value: throughputs.stdev(), unit: UnitDuration.seconds)
         print("                \(averageThroughput.value.formatted(numberFormat)) +/- \(stdevThroughput.value.formatted(numberFormat)) token / sec")
     }
 }
-

@@ -72,23 +72,25 @@ class ModelPipeline {
         }
     }
 
-    func predict(tokens: [Int], maxNewTokens: Int) throws -> AsyncThrowingStream<Prediction, Error> {
+    func predict(tokens initialTokens: [Int], maxNewTokens: Int) throws -> AsyncThrowingStream<Prediction, Error> {
         guard let inferenceConfiguration else {
             throw PipelineError.unsupportedInferenceConfiguration
-        }
-        guard tokens.count <= inferenceConfiguration.inputLength else {
-            // TODO: Support long prompts with a prompt-cache-processor model
-            //       that shifts the KV cache by 64 each time to process the prompt
-            //       `inputLength` tokens at a time.
-            throw PipelineError.unimplementedLongPrompt
         }
 
         let arrayStore = MultiArrayStore(for: self)
         let kvCacheProcessor = KVCacheProcessor(pipeline: self, processorModel: cacheProcessorModel.model!)
 
         return AsyncThrowingStream<Prediction, Error> { continuation in
-            var tokens = tokens
-            let maxTokens = tokens.count + maxNewTokens
+            let inputLength = inferenceConfiguration.inputLength
+            var promptChunks = stride(from: 0, to: initialTokens.count, by: inputLength).map {
+                Array(initialTokens[$0..<min($0 + inputLength, initialTokens.count)])
+            }
+
+            var tokens = promptChunks.removeFirst()
+            let maxTokens = initialTokens.count + maxNewTokens
+
+            let promptTimer = CodeTimer()
+            var promptLatency: Measurement<UnitDuration>? = nil
             while tokens.count < maxTokens {
                 let timer = CodeTimer()
                 let tokenSignpostState = self.signposter.beginInterval("Predict", id: self.signposter.makeSignpostID(), "Token #\(tokens.count)")
@@ -114,7 +116,7 @@ class ModelPipeline {
                     // Update the cache (async) each time a full set of input tokens is processed.
                     // e.g. if the model takes in 64 input tokens at once, update when tokens
                     // is length 64, 128, 192, etc.
-                    if tokens.count % inferenceConfiguration.inputLength == 0 {
+                    if tokens.count % inputLength == 0 {
                         kvCacheProcessor.submit(inputs: inputs, outputs: outputs, forChunk: i)
                     }
 
@@ -123,13 +125,21 @@ class ModelPipeline {
                     }
                 }
 
-                let newTokenIndex = tokens.isEmpty ? 0 : (tokens.count - 1) % inferenceConfiguration.inputLength
-                let newToken = try await self.logitProcessor.argmax(logits: logits, index: newTokenIndex)
-                tokens.append(newToken)
+                if !promptChunks.isEmpty {
+                    for token in promptChunks.removeFirst() {
+                        tokens.append(token)
+                        continuation.yield(Prediction(newToken: token, allTokens: tokens, latency: nil, promptLatency: nil))
+                    }
+                    promptLatency = promptTimer.elapsed()
+                } else {
+                    let newTokenIndex = tokens.isEmpty ? 0 : (tokens.count - 1) % inputLength
+                    let newToken = try await self.logitProcessor.argmax(logits: logits, index: newTokenIndex)
+                    tokens.append(newToken)
+                    continuation.yield(Prediction(newToken: newToken, allTokens: tokens, latency: timer.elapsed(), promptLatency: promptLatency))
+                    promptLatency = nil
+                }
 
-                continuation.yield(Prediction(newToken: newToken, allTokens: tokens, latency: timer.elapsed()))
-
-                self.signposter.endInterval("Predict", tokenSignpostState, "\(newToken)")
+                self.signposter.endInterval("Predict", tokenSignpostState, "\(tokens.last!)")
             }
 
             continuation.finish()
@@ -290,7 +300,6 @@ struct ChunkFileInfo {
 }
 
 enum PipelineError: Error {
-    case unimplementedLongPrompt // Could support this, just not yet.
     case unsupportedInferenceConfiguration
     case cacheProcessorNotFound
     case notFound
@@ -301,7 +310,8 @@ enum PipelineError: Error {
 struct Prediction {
     let newToken: Int
     let allTokens: [Int]
-    let latency: Measurement<UnitDuration>
+    let latency: Measurement<UnitDuration>?
+    let promptLatency: Measurement<UnitDuration>?
 }
 
 struct CodeTimer {
