@@ -200,7 +200,7 @@ extension ModelPipeline {
         }
 
         if chunks.count == 0 {
-            throw PipelineError.notFound
+            throw PipelineError.modelChunksNotFound
         }
 
         // Model for updating KV caches.
@@ -303,7 +303,7 @@ struct ChunkFileInfo {
 enum PipelineError: Error {
     case unsupportedInferenceConfiguration
     case cacheProcessorNotFound
-    case notFound
+    case modelChunksNotFound
     case ambiguousModelPath(possiblePrefixes: [String])
     case notImplementedError
 }
