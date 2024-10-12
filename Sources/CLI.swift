@@ -24,7 +24,7 @@ struct CLI: AsyncParsableCommand {
     var logitProcessorModelName: String = "logit-processor.mlmodelc"
 
     @Option(help: "Tokenizer name on huggingface.")
-    var tokenizerName: String = "pcuenq/Llama-2-7b-chat-coreml"
+    var tokenizerName: String?
 
     @Argument(help: "Input text.")
     var inputText: String = "Several species of shrub of the genus Coffea produce the berries from which coffee is extracted. The two main species commercially cultivated are Coffea canephora"
@@ -43,6 +43,11 @@ struct CLI: AsyncParsableCommand {
             return
         }
 
+        guard let tokenizerName = tokenizerName ?? inferTokenizer() else {
+            print("Unable to infer tokenizer. Please provide --tokenizerName.")
+            return
+        }
+
         let pipeline = try ModelPipeline.from(
             folder: modelDirectory,
             modelPrefix: localModelPrefix,
@@ -58,6 +63,17 @@ struct CLI: AsyncParsableCommand {
 
         let generator = TextGenerator(pipeline: pipeline, tokenizer: tokenizer)
         try await generator.generate(text: inputText, maxNewTokens: maxNewTokens)
+    }
+
+    func inferTokenizer() -> String? {
+        switch (repoID ?? localModelPrefix ?? localModelDirectory?.lastPathComponent)?.lowercased() ?? "" {
+        case let str where str.contains("llama-2-7b"):
+            return "pcuenq/Llama-2-7b-chat-coreml"
+        case let str where str.contains( "llama-3.2-1b"):
+            return "meta-llama/Llama-3.2-1B"
+        default:
+            return nil
+        }
     }
 
     /// Download a model and return the local directory URL.

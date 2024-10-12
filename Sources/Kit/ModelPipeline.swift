@@ -281,8 +281,9 @@ struct ChunkFileInfo {
     init?(url: URL) {
         self.url = url
         self.fileName = url.lastPathComponent
+
+        var split = url.deletingPathExtension().lastPathComponent.split(separator: "_")
         guard
-            var split = self.fileName.split(separator: ".").first?.split(separator: "_"),
             let chunkString = split.popLast(),
             let chunkNumber = Int(chunkString.replacingOccurrences(of: "chunk", with: ""))
         else {
