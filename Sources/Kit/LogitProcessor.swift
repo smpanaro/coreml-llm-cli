@@ -23,7 +23,7 @@ class LogitProcessor {
 //    func multinomial(logits: MLMultiArray) async throws -> Int {
 //    }
 
-    func argmax(logits: MLMultiArray, index: Int? = nil) async throws -> Int {
+    func argmax(logits: [MLMultiArray], index: Int? = nil) async throws -> Int {
         let state = signposter.beginInterval("Sample", "Argmax")
         defer { signposter.endInterval("Sample", state) }
 
@@ -33,10 +33,13 @@ class LogitProcessor {
         return Int(prediction)
     }
 
-    fileprivate func predict(logits: MLMultiArray) async throws -> MLFeatureProvider {
-        let inputs = try MLDictionaryFeatureProvider(dictionary: [
-            "logits": logits,
-        ])
+    fileprivate func predict(logits: [MLMultiArray]) async throws -> MLFeatureProvider {
+        let keysValues = logits.enumerated().map { (index, array) in
+            return (logits.count == 1 ? "logits" : "logits_\(index)", array)
+        }
+        let inputs = try MLDictionaryFeatureProvider(
+            dictionary: Dictionary(keysValues, uniquingKeysWith: { (first, _) in first })
+        )
         return try await model.model!.prediction(from: inputs)
     }
 }

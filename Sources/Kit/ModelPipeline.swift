@@ -96,7 +96,7 @@ class ModelPipeline {
                 let tokenSignpostState = self.signposter.beginInterval("Predict", id: self.signposter.makeSignpostID(), "Token #\(tokens.count)")
 
                 // Do a forward pass of the model.
-                var logits: MLMultiArray!
+                var logitChunks: [MLMultiArray] = []
                 for (i, chunk) in self.chunks.enumerated() {
                     let model = chunk.model!
 
@@ -120,9 +120,11 @@ class ModelPipeline {
                         kvCacheProcessor.submit(inputs: inputs, outputs: outputs, forChunk: i)
                     }
 
-                    if outputs.featureNames.contains("logits") {
-                        logits = outputs.featureValue(for: "logits")!.multiArrayValue!
-                    }
+                    // Sometimes logits are returned in chunks along the vocab dimension.
+                    let logitFeatures = outputs.featureNames
+                        .filter { $0.starts(with: "logit") }
+                        .sorted { ($0.trailingNumberSuffix() ?? -1) < ($1.trailingNumberSuffix() ?? -1) }
+                    logitChunks = logitFeatures.map { outputs.featureValue(for: $0)!.multiArrayValue! }
                 }
 
                 if !promptChunks.isEmpty {
@@ -133,7 +135,7 @@ class ModelPipeline {
                     promptLatency = promptTimer.elapsed()
                 } else {
                     let newTokenIndex = tokens.isEmpty ? 0 : (tokens.count - 1) % inputLength
-                    let newToken = try await self.logitProcessor.argmax(logits: logits, index: newTokenIndex)
+                    let newToken = try await self.logitProcessor.argmax(logits: logitChunks, index: newTokenIndex)
                     tokens.append(newToken)
                     continuation.yield(Prediction(newToken: newToken, allTokens: tokens, latency: timer.elapsed(), promptLatency: promptLatency))
                     promptLatency = nil
@@ -332,3 +334,10 @@ protocol Loadable {
 extension LogitProcessor: Loadable {}
 extension DeferredModel: Loadable {}
 extension PipelineChunk: Loadable {}
+
+extension String {
+    func trailingNumberSuffix() -> Int? {
+        guard let number = self.split(separator: "_").last else { return nil }
+        return Int(number)
+    }
+}

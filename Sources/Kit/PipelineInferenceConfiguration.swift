@@ -22,7 +22,7 @@ extension PipelineInferenceConfiguration {
         let inputIDs = first.modelDescription.inputDescriptionsByName["input_ids"]
         self.inputLength = inputIDs!.multiArrayConstraint!.shape.last!.intValue
 
-        let logits = last.modelDescription.outputDescriptionsByName["logits"]
+        let logits = last.modelDescription.outputDescriptionsByName["logits"] ?? last.modelDescription.outputDescriptionsByName["logits_0"]
         self.vocabSize = logits!.multiArrayConstraint!.shape.last!.intValue
 
         guard let firstInnerModel = innerModels.first
