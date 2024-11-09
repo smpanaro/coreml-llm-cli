@@ -32,6 +32,9 @@ struct CLI: AsyncParsableCommand {
     @Option(help: "Maximum number of new tokens to generate.")
     var maxNewTokens: Int = 60
 
+    @Option(help: "Print verbose logs for debugging.")
+    var verbose: Bool = false
+
     mutating func run() async throws {
         var modelDirectory = localModelDirectory
         if let repoID {
@@ -60,6 +63,7 @@ struct CLI: AsyncParsableCommand {
         print(pipeline)
 
         let tokenizer = try await AutoTokenizer.from(cached: tokenizerName, hubApi: .init(hfToken: HubApi.defaultToken()))
+        if verbose { print("Tokenizer \(tokenizerName) loaded.") }
 
         let generator = TextGenerator(pipeline: pipeline, tokenizer: tokenizer)
         try await generator.generate(text: inputText, maxNewTokens: maxNewTokens)
@@ -71,6 +75,8 @@ struct CLI: AsyncParsableCommand {
             return "pcuenq/Llama-2-7b-chat-coreml"
         case let str where str.contains( "llama-3.2-1b"):
             return "meta-llama/Llama-3.2-1B"
+        case let str where str.contains( "llama-3.2-3b"):
+            return "meta-llama/Llama-3.2-3B"
         default:
             return nil
         }
