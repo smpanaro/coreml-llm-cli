@@ -19,6 +19,7 @@ $ swift run -c release LLMCLI --repo-id smpanaro/Llama-2-7b-coreml --max-new-tok
 |Variant|1st Load Time|2nd+ Load Time|Tokens/Sec  |ANE Power|
 |--     |--           |--            |--          |-        |
 |M1 Max |113s         |8.1s          |7.02 ± 0.11 |4.2W     |
+|M3 Max |-            |0.8s          |13.92 ± 0.5 |8W       |
 
 For M2-M4, consider the times for Model Version 1 as a lower bound:
 
